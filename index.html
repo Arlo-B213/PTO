@@ -159,6 +159,7 @@ header.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:spac
 @media (max-width:560px){.addmem{grid-template-columns:1fr 1fr}}
 
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(18px + env(safe-area-inset-bottom,0px));background:var(--fg);color:var(--bg);padding:9px 16px;border-radius:6px;font-size:.9rem;z-index:30;max-width:calc(100% - 32px)}
+.notice.bad{border-style:solid;border-color:var(--bad);color:var(--bad);background:var(--bad-bg)}
 .notice{padding:12px 14px;border:1px dashed var(--line);border-radius:8px;color:var(--muted);background:var(--surface)}
 @media (prefers-reduced-motion:no-preference){.day{transition:box-shadow .12s}}
 .gate{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:16px;z-index:40}
@@ -575,7 +576,8 @@ function goTo(d){const p=parse(d);S.y=p.getUTCFullYear();S.m=p.getUTCMonth();S.s
 let tt;function toast(msg){const t=$("#toast");t.textContent=msg;t.hidden=false;clearTimeout(tt);tt=setTimeout(()=>t.hidden=true,3200)}
 function handleErr(e){
   const code=e&&e.code;
-  if(code==="permission-denied")toast("The database refused the save. Check the Firestore rules in Firebase (see README).");
+  if(code==="timeout")toast("Not saved: the database didn't respond. Check your connection, or that the Firestore database is set up.");
+  else if(code==="permission-denied")toast("The database refused the save. Check the Firestore rules in Firebase (see README).");
   else if(code==="resource-exhausted")toast("The database's daily limit was reached. Try again tomorrow.");
   else toast("Couldn't save. Check your connection and try again.");
 }
@@ -808,9 +810,19 @@ function boot(role){
   let db;
   try{firebase.initializeApp(window.FIREBASE_CONFIG);db=firebase.firestore();}
   catch(e){showNotice("Couldn't connect to the database. Check your internet connection and reload.");S.loaded=true;render();return}
+  // Any save that gets no answer from the server in 15s is reported as not saved
+  const withTimeout=(fn)=>function(...a){return Promise.race([fn.apply(this,a),new Promise((_,rej)=>setTimeout(()=>rej({code:"timeout"}),15000))])};
+  const F=firebase.firestore||{};
+  if(F.DocumentReference&&F.CollectionReference&&F.WriteBatch){const DR=F.DocumentReference.prototype,CR=F.CollectionReference.prototype,WB=F.WriteBatch.prototype;
+    ["set","update","delete"].forEach(m=>DR[m]=withTimeout(DR[m]));CR.add=withTimeout(CR.add);WB.commit=withTimeout(WB.commit);}
   S.db=db;
   const err=e=>{if(e&&e.code==="permission-denied")showNotice("The database refused access. In Firebase, check the Firestore rules (see README).");else showNotice("Lost connection to the database. Reload to try again.")};
-  db.collection("pto").onSnapshot(s=>{S.pto=s.docs.map(d=>({...d.data(),id:d.id}));S.loaded=true;buildIndex();render()},err);
+  // Warn clearly when the database never answers (e.g. Firestore not created yet), so nobody thinks changes were saved
+  S.serverOk=false;
+  setTimeout(()=>{if(!S.serverOk){S.offline=true;const n=$("#notice");n.innerHTML="<b>Not connected to the database. Changes won't be saved.</b> If this keeps happening, the Firestore database for this calendar may not be set up yet (see the README in the GitHub repo).";n.classList.add("bad");n.hidden=false}},10000);
+  db.collection("pto").onSnapshot({includeMetadataChanges:true},s=>{
+    if(!(s.metadata&&s.metadata.fromCache)&&!S.serverOk){S.serverOk=true;if(S.offline){S.offline=false;$("#notice").classList.remove("bad");$("#notice").hidden=true}}
+    S.pto=s.docs.map(d=>({...d.data(),id:d.id}));S.loaded=true;buildIndex();render()},err);
   db.doc("config/roster").onSnapshot(s=>{S.roster=s.exists?s.data():null;
     if(!S.roster)showNotice(S.canWrite?"No team roster yet. Click “Import schedules” and choose your weekly schedule files to load your team and their PTO.":"The team roster hasn't been set up yet.");
     else $("#notice").hidden=true;render()},err);
