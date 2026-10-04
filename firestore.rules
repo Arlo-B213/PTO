@@ -1,0 +1,23 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // PTO entries
+    match /pto/{id} {
+      allow read: if true;
+      allow create, update: if request.resource.data.keys().hasAll(['name','group','start','end'])
+                            && request.resource.data.start is string
+                            && request.resource.data.end is string
+                            && request.resource.data.end >= request.resource.data.start;
+      allow delete: if true;
+    }
+    // Team roster and staffing limits
+    match /config/{doc} {
+      allow read: if true;
+      allow write: if doc in ['roster', 'settings'];
+    }
+    // Everything else is closed
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

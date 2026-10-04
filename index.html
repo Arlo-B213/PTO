@@ -1,0 +1,645 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>BOH PTO Calendar</title>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap">
+<style>
+/* Layout: kitchen-ticket feel. Month grid (Mon–Sun, like the schedule) on the left, day detail rail on the right; stacks under 960px */
+:root{
+  --bg:#f2f4f6; --surface:#ffffff; --surface-2:#e9edf1; --line:#d3d9e0; --fg:#16202a; --muted:#5a6877;
+  --accent:#1c5a8e; --accent-fg:#ffffff;
+  --warn:#9a5b00; --warn-bg:#fff1d6; --bad:#b42318; --bad-bg:#fde6e3;
+  --g-chef:#7a4fc9; --g-asst:#b0457f; --g-sous:#1d7b70; --g-am:#a86d05; --g-pm:#2a63ad; --g-swing:#4d8520; --g-grave:#5b6676;
+  --display:"Barlow Condensed","Arial Narrow",sans-serif;
+  --body:"Barlow",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0e1319; --surface:#151c24; --surface-2:#1c252f; --line:#2a3541; --fg:#e6ecf2; --muted:#93a1b0;
+  --accent:#6fa9dc; --accent-fg:#0a1520;
+  --warn:#f0b24c; --warn-bg:#382809; --bad:#ff8b7b; --bad-bg:#3b1612;
+  --g-chef:#a98bef; --g-asst:#e384b6; --g-sous:#4fc2b2; --g-am:#e6aa3d; --g-pm:#73a5ec; --g-swing:#8fc65c; --g-grave:#a0abb8;
+  color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0e1319; --surface:#151c24; --surface-2:#1c252f; --line:#2a3541; --fg:#e6ecf2; --muted:#93a1b0;
+  --accent:#6fa9dc; --accent-fg:#0a1520;
+  --warn:#f0b24c; --warn-bg:#382809; --bad:#ff8b7b; --bad-bg:#3b1612;
+  --g-chef:#a98bef; --g-asst:#e384b6; --g-sous:#4fc2b2; --g-am:#e6aa3d; --g-pm:#73a5ec; --g-swing:#8fc65c; --g-grave:#a0abb8;
+  color-scheme:dark}
+
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html{color-scheme:light}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--body);font-size:15px;line-height:1.45}
+.wrap{max-width:1360px;margin:0 auto;padding-inline:16px;padding-block:18px 40px;display:flex;flex-direction:column;gap:14px}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+header.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px}
+.brand h1{font-family:var(--display);font-weight:700;font-size:2rem;letter-spacing:.01em;margin:0;line-height:1;text-wrap:balance}
+.brand p{margin:4px 0 0;color:var(--muted);font-size:.9rem}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+.btn{border:1px solid var(--line);background:var(--surface);padding:8px 14px;border-radius:6px;font-weight:600}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:var(--accent);color:var(--accent-fg);border-color:var(--accent)}
+.btn.danger{color:var(--bad);border-color:var(--bad)}
+.btn.ghost{background:transparent;border-color:transparent;padding:6px 8px}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+
+.stats{display:flex;flex-wrap:wrap;gap:8px 22px;padding:10px 14px;background:var(--surface);border:1px solid var(--line);border-radius:8px}
+.stat{display:flex;align-items:baseline;gap:8px}
+.stat b{font-family:var(--display);font-size:1.5rem;font-variant-numeric:tabular-nums}
+.stat span{color:var(--muted);font-size:.85rem;text-transform:uppercase;letter-spacing:.06em}
+.stat.bad b{color:var(--bad)}
+.stat.warn b{color:var(--warn)}
+
+.main{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:14px;align-items:start}
+@media (max-width:960px){.main{grid-template-columns:minmax(0,1fr)}}
+
+.cal{background:var(--surface);border:1px solid var(--line);border-radius:8px;min-width:0}
+.cal-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.month{display:flex;align-items:center;gap:6px}
+.month h2{font-family:var(--display);font-weight:700;font-size:1.5rem;margin:0 6px;min-width:9.5ch;text-align:center}
+.filters{display:flex;flex-wrap:wrap;gap:6px}
+.fchip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:transparent;border-radius:999px;padding:3px 10px;font-size:.82rem}
+.fchip[aria-pressed="true"]{background:var(--surface-2);border-color:var(--fg)}
+.dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--gc,var(--muted))}
+
+.grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}
+.dow{font-family:var(--mono);font-size:.72rem;letter-spacing:.08em;color:var(--muted);padding:8px 8px 6px;border-bottom:1px solid var(--line)}
+.day{position:relative;min-height:116px;padding:6px 6px 8px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);background:transparent;text-align:left;display:flex;flex-direction:column;gap:3px;border-top:0;border-left:0;border-radius:0;min-width:0}
+.day:nth-child(7n){border-right:0}
+.day.out{background:var(--surface-2);color:var(--muted)}
+.day.out .chip{opacity:.6}
+.day:hover{box-shadow:inset 0 0 0 1px var(--accent)}
+.day.sel{box-shadow:inset 0 0 0 2px var(--accent)}
+.day.over{background:var(--bad-bg)}
+.dhead{display:flex;align-items:center;justify-content:space-between;gap:4px}
+.dnum{font-family:var(--mono);font-size:.8rem;font-variant-numeric:tabular-nums}
+.day.today .dnum{background:var(--fg);color:var(--bg);border-radius:4px;padding:0 5px}
+.flag{font-family:var(--mono);font-size:.62rem;letter-spacing:.04em;text-transform:uppercase;border-radius:3px;padding:1px 4px;white-space:nowrap}
+.flag.over{background:var(--bad);color:var(--surface)}
+.flag.full{background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn)}
+.chip{display:flex;align-items:center;gap:5px;font-size:.78rem;line-height:1.25;padding:2px 5px;border-radius:4px;background:color-mix(in srgb,var(--gc) 14%,transparent);border:1px solid color-mix(in srgb,var(--gc) 35%,transparent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.chip .dot{width:7px;height:7px}
+.chip.pending{border-style:dashed;background:transparent}
+.chip span{overflow:hidden;text-overflow:ellipsis}
+.more{font-size:.74rem;color:var(--muted);padding-left:4px}
+.dots{display:none;flex-wrap:wrap;gap:3px}
+@media (max-width:640px){
+  .day{min-height:64px;padding:4px}
+  .chip,.more{display:none}
+  .dots{display:flex}
+  .flag{font-size:.55rem;padding:0 3px}
+  .flag .long{display:none}
+}
+
+.rail{display:flex;flex-direction:column;gap:14px;min-width:0}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px;min-width:0}
+.panel h3{font-family:var(--display);font-weight:700;font-size:1.3rem;margin:0 0 2px}
+.panel .sub{color:var(--muted);font-size:.85rem;margin:0 0 10px}
+.eyebrow{font-family:var(--mono);font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.status{padding:8px 10px;border-radius:6px;font-size:.88rem;margin-bottom:10px}
+.status.over{background:var(--bad-bg);color:var(--bad)}
+.status.full{background:var(--warn-bg);color:var(--warn)}
+.status.ok{background:var(--surface-2);color:var(--muted)}
+.gblock{margin-top:10px}
+.gblock h4{display:flex;align-items:center;gap:6px;margin:0 0 6px;font-size:.82rem;text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+.gblock h4 .cnt{margin-left:auto;font-family:var(--mono);font-size:.75rem;font-variant-numeric:tabular-nums}
+.gblock h4 .cnt.over{color:var(--bad)}
+.entry{display:flex;flex-direction:column;gap:2px;padding:8px 10px;border:1px solid var(--line);border-left:3px solid var(--gc);border-radius:6px;margin-bottom:6px}
+.entry.pending{border-left-style:dashed}
+.entry .row1{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.entry .nm{font-weight:600}
+.entry .meta{font-size:.8rem;color:var(--muted);font-family:var(--mono)}
+.entry .note{font-size:.85rem}
+.entry .ops{display:flex;gap:4px;margin-top:4px}
+.tag{font-family:var(--mono);font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;padding:1px 6px;border-radius:3px;border:1px solid var(--line);white-space:nowrap}
+.tag.pending{color:var(--warn);border-color:var(--warn)}
+.list{display:flex;flex-direction:column;gap:6px;max-height:340px;overflow:auto}
+.li{display:flex;gap:10px;align-items:flex-start;padding:7px 8px;border-radius:6px;background:transparent;border:1px solid transparent;text-align:left;width:100%}
+.li:hover{border-color:var(--line);background:var(--surface-2)}
+.li .when{font-family:var(--mono);font-size:.74rem;color:var(--muted);min-width:7.5ch;font-variant-numeric:tabular-nums;padding-top:2px}
+.li .what{min-width:0}
+.li .what div{font-size:.84rem;color:var(--muted)}
+.li.bad .when{color:var(--bad)}
+.empty{color:var(--muted);font-size:.9rem;padding:6px 0}
+
+.overlay{position:fixed;inset:0;background:color-mix(in srgb,var(--bg) 55%,transparent);backdrop-filter:blur(2px);display:flex;align-items:flex-start;justify-content:center;padding:max(24px,env(safe-area-inset-top,0px)) 16px 24px;overflow:auto;z-index:20}
+.sheet{background:var(--surface);border:1px solid var(--line);border-radius:10px;width:100%;max-width:520px;padding:18px;display:flex;flex-direction:column;gap:12px;box-shadow:0 18px 50px rgb(0 0 0 / .18)}
+.sheet.wide{max-width:720px}
+.sheet h3{font-family:var(--display);font-size:1.5rem;margin:0}
+.field{display:flex;flex-direction:column;gap:4px;min-width:0}
+.field label{font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600}
+.field input,.field select,.field textarea{border:1px solid var(--line);background:var(--bg);border-radius:6px;padding:8px 10px;width:100%;min-width:0}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media (max-width:480px){.row{grid-template-columns:1fr}}
+.check{border-radius:6px;padding:10px 12px;font-size:.88rem;display:flex;flex-direction:column;gap:4px}
+.check.over{background:var(--bad-bg);color:var(--bad)}
+.check.full{background:var(--warn-bg);color:var(--warn)}
+.check.ok{background:var(--surface-2);color:var(--muted)}
+.check ul{margin:2px 0 0;padding-left:18px}
+.sheet .foot{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.limits{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.limits .field input{width:100%}
+.roster{display:flex;flex-direction:column;gap:12px;max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:10px}
+.roster h4{margin:0 0 4px;font-size:.82rem;text-transform:uppercase;letter-spacing:.06em;display:flex;gap:6px;align-items:center}
+.mem{display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:.88rem;padding:2px 0}
+.mem .badge{font-family:var(--mono);font-size:.74rem;color:var(--muted);margin-left:6px}
+.addmem{display:grid;grid-template-columns:2fr 1fr 1.4fr auto;gap:8px;align-items:end}
+@media (max-width:560px){.addmem{grid-template-columns:1fr 1fr}}
+
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(18px + env(safe-area-inset-bottom,0px));background:var(--fg);color:var(--bg);padding:9px 16px;border-radius:6px;font-size:.9rem;z-index:30;max-width:calc(100% - 32px)}
+.notice{padding:12px 14px;border:1px dashed var(--line);border-radius:8px;color:var(--muted);background:var(--surface)}
+@media (prefers-reduced-motion:no-preference){.day{transition:box-shadow .12s}}
+.gate{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:16px;z-index:40}
+.gate form{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:24px;width:100%;max-width:360px;display:flex;flex-direction:column;gap:12px}
+.gate h1{font-family:var(--display);font-size:2rem;margin:0;line-height:1}
+.gate p{margin:0;color:var(--muted);font-size:.9rem}
+.gate .err{color:var(--bad);font-size:.88rem}
+.role{font-family:var(--mono);font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);align-self:center}
+.imp{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:10px 12px;border:1px dashed var(--line);border-radius:6px;font-size:.88rem;color:var(--muted)}
+.imp label.btn{display:inline-block}
+.imp input{position:absolute;width:1px;height:1px;opacity:0}
+</style>
+</head>
+<body>
+<div class="gate" id="gate" hidden>
+  <form id="gate-form">
+    <h1>BOH PTO Calendar</h1>
+    <p>Enter the team passcode to open the calendar.</p>
+    <div class="field"><label for="gate-code">Passcode</label><input id="gate-code" type="password" autocomplete="current-password"></div>
+    <div class="err" id="gate-err" hidden>That passcode didn't work. Check with your manager.</div>
+    <button class="btn primary" type="submit">Open calendar</button>
+  </form>
+</div>
+
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <h1>BOH PTO Calendar</h1>
+      <p>Time-off requests for the kitchen team. Days that go over your staffing limits turn red.</p>
+    </div>
+    <div class="actions">
+      <span class="role" id="role-label"></span>
+      <button class="btn ghost" id="btn-lock" type="button">Lock</button>
+      <button class="btn" id="btn-settings" data-action="settings">Limits &amp; team</button>
+      <button class="btn primary" id="btn-add" data-action="add">+ Add time off</button>
+    </div>
+  </header>
+
+  <div class="stats" id="stats">
+    <div class="stat"><b id="st-today">–</b><span>Off today</span></div>
+    <div class="stat"><b id="st-month">–</b><span>Requests this month</span></div>
+    <div class="stat warn"><b id="st-pending">–</b><span>Pending</span></div>
+    <div class="stat bad"><b id="st-over">–</b><span>Over-limit days, next 90</span></div>
+  </div>
+
+  <div id="notice" class="notice" hidden></div>
+
+  <div class="main">
+    <section class="cal" aria-label="Calendar">
+      <div class="cal-head">
+        <div class="month">
+          <button class="btn ghost" data-action="prev" aria-label="Previous month">&#8592;</button>
+          <h2 id="month-label">Month</h2>
+          <button class="btn ghost" data-action="next" aria-label="Next month">&#8594;</button>
+          <button class="btn ghost" data-action="today">Today</button>
+        </div>
+        <div class="filters" id="filters"></div>
+      </div>
+      <div class="grid" id="grid"></div>
+    </section>
+
+    <aside class="rail">
+      <div class="panel" id="day-panel"></div>
+      <div class="panel">
+        <h3>Conflicts ahead</h3>
+        <p class="sub">Days in the next 90 that break a limit.</p>
+        <div class="list" id="conflicts"></div>
+      </div>
+      <div class="panel">
+        <h3>Upcoming time off</h3>
+        <p class="sub">Everything from today forward.</p>
+        <div class="list" id="upcoming"></div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<div class="overlay" id="form-ov" hidden>
+  <form class="sheet" id="pto-form" novalidate>
+    <h3 id="form-title">Add time off</h3>
+    <div class="field">
+      <label for="f-emp">Team member</label>
+      <select id="f-emp" required></select>
+    </div>
+    <div class="row">
+      <div class="field"><label for="f-start">First day off</label><input type="date" id="f-start" required></div>
+      <div class="field"><label for="f-end">Last day off</label><input type="date" id="f-end" required></div>
+    </div>
+    <div class="row">
+      <div class="field"><label for="f-type">Type</label>
+        <select id="f-type"><option>PTO</option><option>Request off</option><option>Leave</option><option>Other</option></select></div>
+      <div class="field"><label for="f-status">Status</label>
+        <select id="f-status"><option>Approved</option><option>Pending</option></select></div>
+    </div>
+    <div class="field"><label for="f-note">Note</label><input id="f-note" placeholder="Optional, e.g. family trip, doctor"></div>
+    <div id="f-check" class="check ok">Pick a team member and dates to check for overlaps.</div>
+    <div class="foot">
+      <button type="button" class="btn" data-action="close-form">Cancel</button>
+      <button type="submit" class="btn primary" id="f-save">Save</button>
+    </div>
+  </form>
+</div>
+
+<div class="overlay" id="set-ov" hidden>
+  <div class="sheet wide">
+    <h3>Limits &amp; team</h3>
+    <div>
+      <div class="eyebrow">Most people off on one day</div>
+      <p class="sub" style="margin:4px 0 8px;color:var(--muted);font-size:.85rem">Per position group, plus one limit for the whole kitchen. Going over turns the day red.</p>
+      <div class="limits" id="limits"></div>
+    </div>
+    <div>
+      <div class="eyebrow" style="margin-bottom:6px">Team roster</div>
+      <div class="roster" id="roster-list"></div>
+    </div>
+    <div class="imp">
+      <span>Setting up for the first time? Load the starter file with your team and current PTO.</span>
+      <label class="btn" for="imp-file">Import starter file</label>
+      <input type="file" id="imp-file" accept=".json,application/json">
+    </div>
+    <div class="addmem">
+      <div class="field"><label for="m-name">New member</label><input id="m-name" placeholder="Full name"></div>
+      <div class="field"><label for="m-badge">Badge</label><input id="m-badge" placeholder="e.g. 28700"></div>
+      <div class="field"><label for="m-group">Group</label><select id="m-group"></select></div>
+      <button class="btn" data-action="add-member">Add</button>
+    </div>
+    <div class="foot">
+      <button class="btn" data-action="close-settings">Cancel</button>
+      <button class="btn primary" data-action="save-settings">Save changes</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script>
+(function(){
+const GROUPS=[
+  {key:"chef",label:"Chef",color:"var(--g-chef)",limit:1},
+  {key:"asst",label:"Assistant Chef",color:"var(--g-asst)",limit:1},
+  {key:"sous",label:"Sous Chefs",color:"var(--g-sous)",limit:1},
+  {key:"am",label:"AM Line Cooks",color:"var(--g-am)",limit:2},
+  {key:"pm",label:"PM Line Cooks",color:"var(--g-pm)",limit:1},
+  {key:"swing",label:"Swing & Late Swing",color:"var(--g-swing)",limit:2},
+  {key:"grave",label:"Grave Line Cooks",color:"var(--g-grave)",limit:1}
+];
+const GMAP=Object.fromEntries(GROUPS.map(g=>[g.key,g]));
+const DOW=["MON","TUE","WED","THU","FRI","SAT","SUN"];
+const MONTHS=["January","February","March","April","May","June","July","August","September","October","November","December"];
+const $=s=>document.querySelector(s);
+const pad=n=>String(n).padStart(2,"0");
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const parse=s=>{const[y,m,d]=s.split("-").map(Number);return new Date(Date.UTC(y,m-1,d))};
+const ymd=d=>d.toISOString().slice(0,10);
+const addDays=(s,n)=>{const d=parse(s);d.setUTCDate(d.getUTCDate()+n);return ymd(d)};
+const now=new Date();
+const TODAY=`${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
+const fmtShort=s=>{const d=parse(s);return `${MONTHS[d.getUTCMonth()].slice(0,3)} ${d.getUTCDate()}`};
+const fmtLong=s=>{const d=parse(s);return `${["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getUTCDay()]}, ${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`};
+const fmtRange=(a,b)=>a===b?fmtShort(a):`${fmtShort(a)} – ${fmtShort(b)}`;
+const shortName=n=>{const p=n.replace(/'[^']*'/g,"").trim().split(/\s+/);return p.length>1?`${p[0]} ${p[p.length-1][0]}.`:p[0]};
+
+const S={db:null,canWrite:true,roster:null,settings:null,pto:[],index:new Map(),
+  y:now.getFullYear(),m:now.getMonth(),sel:TODAY,filter:"all",editId:null,confirmDel:null,draftRoster:null,loaded:false};
+
+function limits(){const l=(S.settings&&S.settings.limits)||{};const o={};GROUPS.forEach(g=>o[g.key]=Number.isFinite(+l[g.key])&&l[g.key]!==""?+l[g.key]:g.limit);return o}
+function totalLimit(){const t=S.settings&&S.settings.total;return Number.isFinite(+t)&&t!==""&&t!=null?+t:4}
+
+function buildIndex(){
+  S.index=new Map();
+  for(const e of S.pto){
+    if(!e.start||!e.end)continue;
+    let s=e.start,guard=0;
+    while(s<=e.end&&guard<400){if(!S.index.has(s))S.index.set(s,[]);S.index.get(s).push(e);s=addDays(s,1);guard++}
+  }
+  for(const arr of S.index.values())arr.sort((a,b)=>GROUPS.findIndex(g=>g.key===a.group)-GROUPS.findIndex(g=>g.key===b.group)||a.name.localeCompare(b.name));
+}
+function evalEntries(list){
+  const L=limits(),T=totalLimit(),by={};
+  list.forEach(e=>by[e.group]=(by[e.group]||0)+1);
+  const over=[],full=[];
+  for(const k in by){const lim=L[k]??1;if(by[k]>lim)over.push(k);else if(by[k]===lim)full.push(k)}
+  const total=list.length,totalOver=total>T,totalFull=total===T&&T>0;
+  const level=(over.length||totalOver)?"over":(full.length||totalFull)?"full":total?"ok":"none";
+  return {by,over,full,total,totalOver,totalFull,level,L,T};
+}
+function evalDay(d,excludeId){return evalEntries((S.index.get(d)||[]).filter(e=>e.id!==excludeId))}
+function reasons(ev){
+  const r=[];
+  ev.over.forEach(k=>r.push(`${GMAP[k]?.label||k}: ${ev.by[k]} off (limit ${ev.L[k]})`));
+  if(ev.totalOver)r.push(`Whole kitchen: ${ev.total} off (limit ${ev.T})`);
+  return r;
+}
+
+/* ---------- render ---------- */
+function render(){renderStats();renderFilters();renderCalendar();renderDay();renderConflicts();renderUpcoming()}
+
+function renderStats(){
+  const t=S.index.get(TODAY)||[];
+  $("#st-today").textContent=t.length;
+  const ms=`${S.y}-${pad(S.m+1)}-01`,me=addDays(`${S.m===11?S.y+1:S.y}-${pad(S.m===11?1:S.m+2)}-01`,-1);
+  $("#st-month").textContent=S.pto.filter(e=>e.start<=me&&e.end>=ms).length;
+  $("#st-pending").textContent=S.pto.filter(e=>e.status==="Pending"&&e.end>=TODAY).length;
+  $("#st-over").textContent=conflictDays().length;
+}
+function renderFilters(){
+  const el=$("#filters");
+  el.innerHTML=[`<button class="fchip" data-action="filter" data-key="all" aria-pressed="${S.filter==="all"}">All groups</button>`]
+    .concat(GROUPS.map(g=>`<button class="fchip" data-action="filter" data-key="${g.key}" aria-pressed="${S.filter===g.key}" style="--gc:${g.color}"><span class="dot"></span>${esc(g.label)}</button>`)).join("");
+}
+function renderCalendar(){
+  $("#month-label").textContent=`${MONTHS[S.m]} ${S.y}`;
+  const first=new Date(Date.UTC(S.y,S.m,1));
+  const offset=(first.getUTCDay()+6)%7; // Monday start
+  let d=addDays(ymd(first),-offset);
+  const cells=DOW.map(x=>`<div class="dow">${x}</div>`);
+  const lastOfMonth=ymd(new Date(Date.UTC(S.y,S.m+1,0)));
+  const weeks=Math.ceil((offset+parse(lastOfMonth).getUTCDate())/7);
+  for(let i=0;i<weeks*7;i++){
+    const all=S.index.get(d)||[];
+    const ev=evalEntries(all);
+    const shown=S.filter==="all"?all:all.filter(e=>e.group===S.filter);
+    const inMonth=parse(d).getUTCMonth()===S.m;
+    const cls=["day",inMonth?"":"out",d===TODAY?"today":"",d===S.sel?"sel":"",ev.level==="over"?"over":""].join(" ");
+    let flag="";
+    if(ev.level==="over")flag=`<span class="flag over">Over<span class="long"> limit</span></span>`;
+    else if(ev.level==="full")flag=`<span class="flag full">Full</span>`;
+    const max=3;
+    const chips=shown.slice(0,max).map(e=>`<span class="chip ${e.status==="Pending"?"pending":""}" style="--gc:${GMAP[e.group]?.color||"var(--muted)"}" title="${esc(e.name)} · ${esc(e.type)}${e.status==="Pending"?" (pending)":""}"><span class="dot"></span><span>${esc(shortName(e.name))}</span></span>`).join("");
+    const more=shown.length>max?`<span class="more">+${shown.length-max} more</span>`:"";
+    const dots=shown.length?`<span class="dots">${shown.map(e=>`<span class="dot" style="--gc:${GMAP[e.group]?.color}"></span>`).join("")}</span>`:"";
+    const label=`${fmtLong(d)}, ${all.length} off${ev.level==="over"?", over limit":""}`;
+    cells.push(`<button class="${cls}" data-action="pick" data-date="${d}" aria-label="${esc(label)}"><span class="dhead"><span class="dnum">${parse(d).getUTCDate()}</span>${flag}</span>${chips}${more}${dots}</button>`);
+    d=addDays(d,1);
+  }
+  $("#grid").innerHTML=cells.join("");
+}
+function entryHTML(e){
+  const g=GMAP[e.group];
+  const conf=S.confirmDel===e.id;
+  return `<div class="entry ${e.status==="Pending"?"pending":""}" style="--gc:${g?.color||"var(--muted)"}">
+    <div class="row1"><span class="nm">${esc(e.name)}</span><span class="tag ${e.status==="Pending"?"pending":""}">${esc(e.status||"Approved")}</span></div>
+    <div class="meta">${esc(e.type||"PTO")} · ${esc(fmtRange(e.start,e.end))}</div>
+    ${e.note?`<div class="note">${esc(e.note)}</div>`:""}
+    ${S.canWrite&&S.db?`<div class="ops">
+      <button class="btn ghost" data-action="edit" data-id="${esc(e.id)}">Edit</button>
+      ${conf?`<button class="btn danger" data-action="delete" data-id="${esc(e.id)}">Confirm delete</button><button class="btn ghost" data-action="cancel-del">Keep</button>`
+            :`<button class="btn ghost" data-action="ask-del" data-id="${esc(e.id)}">Delete</button>`}
+      ${e.status==="Pending"?`<button class="btn ghost" data-action="approve" data-id="${esc(e.id)}">Approve</button>`:""}
+    </div>`:""}
+  </div>`;
+}
+function renderDay(){
+  const d=S.sel,list=S.index.get(d)||[],ev=evalEntries(list);
+  let status;
+  if(!list.length)status=`<div class="status ok">Nobody is off. Safe to approve time off here.</div>`;
+  else if(ev.level==="over")status=`<div class="status over"><b>Over limit.</b> ${reasons(ev).map(esc).join("; ")}.</div>`;
+  else if(ev.level==="full"){
+    const f=ev.full.map(k=>GMAP[k]?.label||k);if(ev.totalFull)f.push("whole kitchen");
+    status=`<div class="status full"><b>At limit</b> for ${esc(f.join(", "))}. Approving one more there puts the day over.</div>`;
+  } else status=`<div class="status ok">${list.length} off, within all limits.</div>`;
+  const groups=GROUPS.filter(g=>ev.by[g.key]).map(g=>{
+    const items=list.filter(e=>e.group===g.key);
+    const isOver=ev.over.includes(g.key);
+    return `<div class="gblock"><h4><span class="dot" style="--gc:${g.color}"></span>${esc(g.label)}<span class="cnt ${isOver?"over":""}">${items.length} / ${ev.L[g.key]}</span></h4>${items.map(entryHTML).join("")}</div>`;
+  }).join("");
+  $("#day-panel").innerHTML=`<div class="eyebrow">Selected day</div><h3>${esc(fmtLong(d))}</h3>${status}${groups}
+    ${S.canWrite&&S.db?`<button class="btn" style="margin-top:10px;width:100%" data-action="add" data-date="${d}">+ Add time off starting ${esc(fmtShort(d))}</button>`:""}`;
+}
+function conflictDays(){
+  const out=[];let d=TODAY;
+  for(let i=0;i<90;i++){const ev=evalDay(d);if(ev.level==="over")out.push({d,ev});d=addDays(d,1)}
+  return out;
+}
+function renderConflicts(){
+  const c=conflictDays();
+  $("#conflicts").innerHTML=c.length?c.map(({d,ev})=>`<button class="li bad" data-action="jump" data-date="${d}"><span class="when">${esc(fmtShort(d))}</span><span class="what">${esc(reasons(ev).join("; "))}<div>${esc((S.index.get(d)||[]).map(e=>shortName(e.name)).join(", "))}</div></span></button>`).join("")
+    :`<div class="empty">${S.loaded?"No conflicts in the next 90 days.":"Loading…"}</div>`;
+}
+function renderUpcoming(){
+  const up=S.pto.filter(e=>e.end>=TODAY).sort((a,b)=>a.start.localeCompare(b.start)||a.name.localeCompare(b.name));
+  $("#upcoming").innerHTML=up.length?up.map(e=>`<button class="li" data-action="jump" data-date="${e.start<TODAY?TODAY:e.start}"><span class="when">${esc(fmtShort(e.start))}</span><span class="what"><span style="display:inline-flex;align-items:center;gap:6px"><span class="dot" style="--gc:${GMAP[e.group]?.color}"></span>${esc(e.name)}</span><div>${esc(e.type||"PTO")} · ${esc(fmtRange(e.start,e.end))}${e.status==="Pending"?" · pending":""}</div></span></button>`).join("")
+    :`<div class="empty">${S.loaded?"No upcoming time off yet. Use “Add time off” to log the first request.":"Loading…"}</div>`;
+}
+
+/* ---------- form ---------- */
+function rosterGroups(){return (S.roster&&S.roster.groups)||[]}
+function fillEmpSelect(selName){
+  const sel=$("#f-emp");
+  const gs=rosterGroups();
+  sel.innerHTML=`<option value="">Choose a team member…</option>`+gs.map(g=>`<optgroup label="${esc(GMAP[g.key]?.label||g.key)}">${(g.members||[]).map(m=>`<option value="${esc(g.key)}|${esc(m.name)}">${esc(m.name)}${m.badge?` (${esc(m.badge)})`:""}</option>`).join("")}</optgroup>`).join("");
+  if(selName){const v=[...sel.options].find(o=>o.value.split("|")[1]===selName);if(v)sel.value=v.value;else{const o=document.createElement("option");o.value=selName;o.textContent=selName;sel.appendChild(o);sel.value=selName}}
+}
+function openForm(opts={}){
+  if(!S.db){toast("Still connecting to the database. Try again in a moment.");return}
+  if(!S.canWrite){toast("You have view-only access to this calendar.");return}
+  const e=opts.id?S.pto.find(x=>x.id===opts.id):null;
+  S.editId=e?e.id:null;
+  $("#form-title").textContent=e?"Edit time off":"Add time off";
+  fillEmpSelect(e?.name);
+  if(e&&!$("#f-emp").value.includes("|"))$("#f-emp").value=`${e.group}|${e.name}`;
+  const start=e?.start||opts.date||(S.sel>=TODAY?S.sel:TODAY);
+  $("#f-start").value=start;$("#f-end").value=e?.end||start;
+  $("#f-type").value=e?.type||"PTO";$("#f-status").value=e?.status||"Approved";$("#f-note").value=e?.note||"";
+  $("#form-ov").hidden=false;checkForm();
+  setTimeout(()=>$("#f-emp").focus(),30);
+}
+function formValue(){
+  const v=$("#f-emp").value;let group,name;
+  if(v.includes("|"))[group,name]=v.split("|");
+  else if(S.editId){const e=S.pto.find(x=>x.id===S.editId);group=e?.group;name=e?.name}
+  return {group,name,start:$("#f-start").value,end:$("#f-end").value,type:$("#f-type").value,status:$("#f-status").value,note:$("#f-note").value.trim()};
+}
+function checkForm(){
+  const f=formValue(),box=$("#f-check"),btn=$("#f-save");
+  btn.textContent="Save";
+  if(!f.name||!f.start||!f.end){box.className="check ok";box.textContent="Pick a team member and dates to check for overlaps.";return}
+  if(f.end<f.start){box.className="check over";box.textContent="The last day is before the first day.";return}
+  const lines=[],warn=[];let d=f.start,dup=false,n=0;
+  while(d<=f.end&&n<400){
+    const others=(S.index.get(d)||[]).filter(e=>e.id!==S.editId);
+    if(others.some(e=>e.name===f.name))dup=true;
+    const ev=evalEntries(others.concat([{group:f.group,name:f.name}]));
+    if(ev.level==="over")lines.push(`${fmtLong(d)}: ${reasons(ev).join("; ")}. Already off: ${others.filter(e=>e.group===f.group||ev.totalOver).map(e=>shortName(e.name)).join(", ")||"—"}`);
+    else if(ev.level==="full"&&ev.full.includes(f.group))warn.push(fmtShort(d));
+    d=addDays(d,1);n++;
+  }
+  const days=n;
+  if(lines.length){
+    box.className="check over";
+    box.innerHTML=`<b>${lines.length} day${lines.length>1?"s":""} would go over the limit.</b><ul>${lines.slice(0,8).map(l=>`<li>${esc(l)}</li>`).join("")}${lines.length>8?`<li>…and ${lines.length-8} more</li>`:""}</ul>${dup?"<div>This person already has time off logged on some of these days.</div>":""}`;
+    btn.textContent="Save anyway";
+  } else if(warn.length||dup){
+    box.className="check full";
+    box.innerHTML=`${warn.length?`<div><b>OK, but it fills ${esc(GMAP[f.group]?.label||"the group")}</b> on ${esc(warn.join(", "))}. Nobody else in that group should be off those days.</div>`:""}${dup?"<div>This person already has time off logged on some of these days.</div>":""}`;
+  } else {
+    box.className="check ok";box.textContent=`No overlaps. ${days} day${days>1?"s":""} off, within all limits.`;
+  }
+}
+async function saveForm(ev){
+  ev.preventDefault();
+  const f=formValue();
+  if(!f.name){toast("Choose a team member.");return}
+  if(!f.start||!f.end||f.end<f.start){toast("Check the dates: the last day can't be before the first.");return}
+  if((parse(f.end)-parse(f.start))/864e5>365){toast("That range is over a year. Shorten it.");return}
+  const body={...f,updated:new Date().toISOString()};
+  const btn=$("#f-save");btn.disabled=true;
+  try{
+    if(S.editId)await S.db.doc("pto/"+S.editId).set(body);
+    else await S.db.collection("pto").add({...body,created:new Date().toISOString()});
+    $("#form-ov").hidden=true;S.sel=f.start;goTo(f.start);toast(S.editId?"Time off updated":"Time off added");
+  }catch(e){handleErr(e)}finally{btn.disabled=false}
+}
+
+/* ---------- settings ---------- */
+function openSettings(){
+  if(!S.db){toast("Still connecting to the database. Try again in a moment.");return}
+  if(!S.canWrite){toast("You have view-only access to this calendar.");return}
+  const L=limits();
+  $("#limits").innerHTML=GROUPS.map(g=>`<div class="field"><label for="lim-${g.key}"><span class="dot" style="--gc:${g.color};display:inline-block;margin-right:5px"></span>${esc(g.label)}</label><input type="number" min="0" max="40" id="lim-${g.key}" value="${L[g.key]}"></div>`).join("")
+    +`<div class="field"><label for="lim-total">Whole kitchen</label><input type="number" min="0" max="80" id="lim-total" value="${totalLimit()}"></div>`;
+  S.draftRoster=JSON.parse(JSON.stringify(rosterGroups().length?rosterGroups():GROUPS.map(g=>({key:g.key,members:[]}))));
+  GROUPS.forEach(g=>{if(!S.draftRoster.find(x=>x.key===g.key))S.draftRoster.push({key:g.key,members:[]})});
+  $("#m-group").innerHTML=GROUPS.map(g=>`<option value="${g.key}">${esc(g.label)}</option>`).join("");
+  renderRoster();$("#set-ov").hidden=false;
+}
+function renderRoster(){
+  $("#roster-list").innerHTML=GROUPS.map(g=>{
+    const grp=S.draftRoster.find(x=>x.key===g.key)||{members:[]};
+    return `<div><h4><span class="dot" style="--gc:${g.color}"></span>${esc(g.label)} <span class="badge" style="font-family:var(--mono);color:var(--muted);font-weight:400">${grp.members.length}</span></h4>${grp.members.map((m,i)=>`<div class="mem"><span>${esc(m.name)}<span class="badge">${esc(m.badge||"")}</span></span><button class="btn ghost" data-action="rm-member" data-g="${g.key}" data-i="${i}" aria-label="Remove ${esc(m.name)}">Remove</button></div>`).join("")||`<div class="empty">No one in this group.</div>`}</div>`;
+  }).join("");
+}
+async function saveSettings(){
+  const lim={};GROUPS.forEach(g=>{const v=parseInt($("#lim-"+g.key).value,10);lim[g.key]=Number.isFinite(v)&&v>=0?v:g.limit});
+  const tv=parseInt($("#lim-total").value,10);
+  try{
+    await S.db.doc("config/settings").set({limits:lim,total:Number.isFinite(tv)&&tv>=0?tv:4});
+    await S.db.doc("config/roster").set({groups:S.draftRoster});
+    $("#set-ov").hidden=true;toast("Settings saved");
+  }catch(e){handleErr(e)}
+}
+
+/* ---------- misc ---------- */
+function goTo(d){const p=parse(d);S.y=p.getUTCFullYear();S.m=p.getUTCMonth();S.sel=d;render()}
+let tt;function toast(msg){const t=$("#toast");t.textContent=msg;t.hidden=false;clearTimeout(tt);tt=setTimeout(()=>t.hidden=true,3200)}
+function handleErr(e){
+  const code=e&&e.code;
+  if(code==="permission-denied")toast("The database refused the save. Check the Firestore rules in Firebase (see README).");
+  else if(code==="resource-exhausted")toast("The database's daily limit was reached. Try again tomorrow.");
+  else toast("Couldn't save. Check your connection and try again.");
+}
+
+document.addEventListener("click",async ev=>{
+  const b=ev.target.closest("[data-action]");if(!b)return;
+  const a=b.dataset.action;
+  if(a==="prev"){S.m--;if(S.m<0){S.m=11;S.y--}render()}
+  else if(a==="next"){S.m++;if(S.m>11){S.m=0;S.y++}render()}
+  else if(a==="today")goTo(TODAY);
+  else if(a==="pick"){S.sel=b.dataset.date;S.confirmDel=null;const p=parse(S.sel);if(p.getUTCMonth()!==S.m){goTo(S.sel)}else render();if(matchMedia("(max-width:960px)").matches)$("#day-panel").scrollIntoView({behavior:"smooth",block:"start"})}
+  else if(a==="jump"){goTo(b.dataset.date)}
+  else if(a==="filter"){S.filter=b.dataset.key;render()}
+  else if(a==="add")openForm({date:b.dataset.date});
+  else if(a==="edit")openForm({id:b.dataset.id});
+  else if(a==="close-form")$("#form-ov").hidden=true;
+  else if(a==="ask-del"){S.confirmDel=b.dataset.id;renderDay()}
+  else if(a==="cancel-del"){S.confirmDel=null;renderDay()}
+  else if(a==="delete"){try{await S.db.doc("pto/"+b.dataset.id).delete();S.confirmDel=null;toast("Deleted")}catch(e){handleErr(e)}}
+  else if(a==="approve"){try{await S.db.doc("pto/"+b.dataset.id).update({status:"Approved",updated:new Date().toISOString()});toast("Approved")}catch(e){handleErr(e)}}
+  else if(a==="settings")openSettings();
+  else if(a==="close-settings")$("#set-ov").hidden=true;
+  else if(a==="save-settings")saveSettings();
+  else if(a==="rm-member"){const g=S.draftRoster.find(x=>x.key===b.dataset.g);g.members.splice(+b.dataset.i,1);renderRoster()}
+  else if(a==="add-member"){
+    const name=$("#m-name").value.trim(),badge=$("#m-badge").value.trim(),gk=$("#m-group").value;
+    if(!name){toast("Enter a name first.");return}
+    const g=S.draftRoster.find(x=>x.key===gk);g.members.push({name,badge});g.members.sort((x,y)=>x.name.localeCompare(y.name));
+    $("#m-name").value="";$("#m-badge").value="";renderRoster();
+  }
+});
+["f-emp","f-start","f-end"].forEach(id=>$("#"+id).addEventListener("input",()=>{
+  if(id==="f-start"&&($("#f-end").value<$("#f-start").value||!$("#f-end").value))$("#f-end").value=$("#f-start").value;
+  checkForm();
+}));
+$("#pto-form").addEventListener("submit",saveForm);
+document.addEventListener("keydown",e=>{if(e.key==="Escape"){$("#form-ov").hidden=true;$("#set-ov").hidden=true}});
+["form-ov","set-ov"].forEach(id=>$("#"+id).addEventListener("click",e=>{if(e.target.id===id)e.target.hidden=true}));
+
+render();
+
+/* ---------- passcode gate ---------- */
+const PASS={ // SHA-256 of each passcode. Change passcodes by replacing these hashes.
+  editor:"1f5b4a60b9123d297230bab8eea6b845b56ed0a53b2f064ca629caab9083a6dc",
+  viewer:"9f4af2928c816a78384efd27d30b5e5ae9e6e745b8868404720e8cb3f5f5ae2d"
+};
+async function sha(t){const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(t));return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,"0")).join("")}
+function getRole(){try{return localStorage.getItem("pto-role")}catch(_){return null}}
+function setRole(r){try{r?localStorage.setItem("pto-role",r):localStorage.removeItem("pto-role")}catch(_){}}
+$("#gate-form").addEventListener("submit",async e=>{
+  e.preventDefault();
+  const h=await sha($("#gate-code").value.trim());
+  const role=h===PASS.editor?"editor":h===PASS.viewer?"viewer":null;
+  if(!role){$("#gate-err").hidden=false;return}
+  setRole(role);$("#gate").hidden=true;boot(role);
+});
+$("#btn-lock").addEventListener("click",()=>{setRole(null);location.reload()});
+
+/* ---------- import starter file ---------- */
+$("#imp-file").addEventListener("change",async e=>{
+  const f=e.target.files[0];if(!f)return;
+  try{
+    const data=JSON.parse(await f.text());
+    if(!data.roster||!Array.isArray(data.roster.groups))throw new Error("bad");
+    const batch=S.db.batch();
+    batch.set(S.db.doc("config/roster"),data.roster);
+    if(data.settings)batch.set(S.db.doc("config/settings"),data.settings);
+    (data.pto||[]).forEach(p=>{const {id,...body}=p;const ref=id?S.db.collection("pto").doc(id):S.db.collection("pto").doc();batch.set(ref,body)});
+    await batch.commit();
+    $("#set-ov").hidden=true;toast(`Imported ${data.roster.groups.reduce((n,g)=>n+(g.members||[]).length,0)} team members and ${(data.pto||[]).length} time-off entries`);
+  }catch(err){if(err&&err.code)handleErr(err);else toast("That file isn't a PTO starter file. Use the pto-starter.json file.")}
+  e.target.value="";
+});
+
+function boot(role){
+  const showNotice=t=>{const n=$("#notice");n.textContent=t;n.hidden=false};
+  S.canWrite=role==="editor";
+  $("#role-label").textContent=S.canWrite?"Editor":"View only";
+  if(!S.canWrite){$("#btn-add").hidden=true;$("#btn-settings").hidden=true}
+  let db;
+  try{firebase.initializeApp(window.FIREBASE_CONFIG);db=firebase.firestore();}
+  catch(e){showNotice("Couldn't connect to the database. Check your internet connection and reload.");S.loaded=true;render();return}
+  S.db=db;
+  const err=e=>{if(e&&e.code==="permission-denied")showNotice("The database refused access. In Firebase, check the Firestore rules (see README).");else showNotice("Lost connection to the database. Reload to try again.")};
+  db.collection("pto").onSnapshot(s=>{S.pto=s.docs.map(d=>({...d.data(),id:d.id}));S.loaded=true;buildIndex();render()},err);
+  db.doc("config/roster").onSnapshot(s=>{S.roster=s.exists?s.data():null;
+    if(!S.roster)showNotice(S.canWrite?"No team roster yet. Open “Limits & team” and use Import starter file to load your team.":"The team roster hasn't been set up yet.");
+    else $("#notice").hidden=true;render()},err);
+  db.doc("config/settings").onSnapshot(s=>{S.settings=s.exists?s.data():null;buildIndex();render()},err);
+}
+const saved=getRole();
+if(saved==="editor"||saved==="viewer"){$("#gate").hidden=true;boot(saved)}
+else{$("#gate").hidden=false;setTimeout(()=>$("#gate-code").focus(),50)}
+})();
+</script>
+</body>
+</html>
