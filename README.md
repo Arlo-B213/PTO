@@ -2,7 +2,7 @@
 
 A shared calendar for tracking kitchen team time off. Days where too many people from the same position group are off turn red, so you don't approve overlapping PTO.
 
-**Live app:** https://arlo-b213.github.io/pto/
+**Live app:** https://arlo-b213.github.io/PTO/
 
 ## Passcodes
 - **Editor** – add, edit, approve and delete time off; change limits and the team roster.
