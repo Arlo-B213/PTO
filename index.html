@@ -6,6 +6,7 @@
 <title>BOH PTO Calendar</title>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="firebase-config.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -169,6 +170,16 @@ header.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:spac
 .imp{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:10px 12px;border:1px dashed var(--line);border-radius:6px;font-size:.88rem;color:var(--muted)}
 .imp label.btn{display:inline-block}
 .imp input{position:absolute;width:1px;height:1px;opacity:0}
+.isec{display:flex;flex-direction:column;gap:6px}
+.isec h4{margin:0;font-size:.82rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.wk{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;font-size:.9rem;padding:8px 10px;border:1px solid var(--line);border-radius:6px}
+.wk .n{font-family:var(--mono);font-size:.8rem;color:var(--muted);text-align:right}
+.chg{display:flex;flex-wrap:wrap;gap:6px}
+.chg span{font-size:.82rem;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+.chg.add span{border-color:var(--g-swing);color:var(--g-swing)}
+.chg.rm span{border-color:var(--bad);color:var(--bad)}
+.chg.mv span{border-color:var(--warn);color:var(--warn)}
+.ierr{color:var(--bad);font-size:.88rem}
 </style>
 </head>
 <body>
@@ -191,6 +202,8 @@ header.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:spac
     <div class="actions">
       <span class="role" id="role-label"></span>
       <button class="btn ghost" id="btn-lock" type="button">Lock</button>
+      <label class="btn" id="btn-import" for="sch-files">Import schedules</label>
+      <input type="file" id="sch-files" accept=".xlsx,.xls" multiple hidden>
       <button class="btn" id="btn-settings" data-action="settings">Limits &amp; team</button>
       <button class="btn primary" id="btn-add" data-action="add">+ Add time off</button>
     </div>
@@ -291,6 +304,17 @@ header.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:spac
   </div>
 </div>
 
+<div class="overlay" id="imp-ov" hidden>
+  <div class="sheet wide">
+    <h3>Import schedules</h3>
+    <div id="imp-body"></div>
+    <div class="foot">
+      <button class="btn" data-action="close-import">Cancel</button>
+      <button class="btn primary" id="imp-apply" data-action="apply-import">Apply import</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast" hidden></div>
 
 <script>
@@ -332,6 +356,12 @@ function buildIndex(){
     if(!e.start||!e.end)continue;
     let s=e.start,guard=0;
     while(s<=e.end&&guard<400){if(!S.index.has(s))S.index.set(s,[]);S.index.get(s).push(e);s=addDays(s,1);guard++}
+  }
+  // One person counts once per day, even if a manual entry and the imported schedule both list them (manual entry wins)
+  for(const [d,arr] of S.index){
+    const seen=new Map();
+    for(const e of arr){const k=normName(e.name);const prev=seen.get(k);if(!prev||(prev.source==="schedule"&&e.source!=="schedule"))seen.set(k,e)}
+    S.index.set(d,[...seen.values()]);
   }
   for(const arr of S.index.values())arr.sort((a,b)=>GROUPS.findIndex(g=>g.key===a.group)-GROUPS.findIndex(g=>g.key===b.group)||a.name.localeCompare(b.name));
 }
@@ -582,7 +612,7 @@ document.addEventListener("click",async ev=>{
   checkForm();
 }));
 $("#pto-form").addEventListener("submit",saveForm);
-document.addEventListener("keydown",e=>{if(e.key==="Escape"){$("#form-ov").hidden=true;$("#set-ov").hidden=true}});
+document.addEventListener("keydown",e=>{if(e.key==="Escape"){$("#form-ov").hidden=true;$("#set-ov").hidden=true;$("#imp-ov").hidden=true}});
 ["form-ov","set-ov"].forEach(id=>$("#"+id).addEventListener("click",e=>{if(e.target.id===id)e.target.hidden=true}));
 
 render();
@@ -604,6 +634,156 @@ $("#gate-form").addEventListener("submit",async e=>{
 });
 $("#btn-lock").addEventListener("click",()=>{setRole(null);location.reload()});
 
+/* ---------- import weekly schedules (.xlsx) ---------- */
+function normName(n){return String(n||"").replace(/\s+/g," ").trim().toLowerCase()}
+function cleanName(n){return String(n||"").replace(/\s+/g," ").trim()}
+const OFF_CODES={PTO:"PTO",VAC:"PTO",VACATION:"PTO",LOA:"Leave"};
+function headerKey(t){
+  const s=String(t).trim().toLowerCase();
+  if(/^chef$/.test(s)||s==="executive chef")return "chef";
+  if(s.includes("assistant"))return "asst";
+  if(s.includes("sous"))return "sous";
+  if(s.includes("am line"))return "am";
+  if(s.includes("pm line"))return "pm";
+  if(s.includes("swing"))return "swing";
+  if(s.includes("grave"))return "grave";
+  return null;
+}
+const serialToYmd=n=>ymd(new Date(Date.UTC(1899,11,30)+Math.round(n)*864e5));
+const isDateSerial=v=>typeof v==="number"&&v>40000&&v<60000;
+function parseSchedule(rows,fileName){
+  // Week dates: first row with an empty name column and dates in C..I (Mon..Sun)
+  let dates=null;
+  for(const r of rows){if(!r)continue;if((r[0]==null||String(r[0]).trim()==="")&&isDateSerial(r[2])){dates=[2,3,4,5,6,7,8].map(i=>isDateSerial(r[i])?serialToYmd(r[i]):null);if(dates[0])break}}
+  if(!dates||!dates[0])throw new Error(`${fileName}: couldn't find the week's dates in row 2.`);
+  for(let i=1;i<7;i++)if(!dates[i])dates[i]=addDays(dates[0],i);
+  const members=[],off=[],skipped=[];let cur=null,seenDates=0;
+  for(const r of rows){
+    if(!r)continue;
+    const a=r[0]==null?"":String(r[0]).trim(),b=r[1]==null?"":String(r[1]).trim();
+    if(!a){
+      if(isDateSerial(r[2])){seenDates++;if(cur==="am")cur="pm"}
+      continue;
+    }
+    const hk=headerKey(a);
+    const hasShifts=[2,3,4,5,6,7,8].some(i=>typeof r[i]==="string"&&r[i].trim()!=="");
+    if(hk&&!b){cur=hk;continue}
+    if(!hasShifts&&!b){ if(a===a.toUpperCase()||/cook|chef|line|crew/i.test(a))cur="?"+a; continue }
+    if(!cur||cur.startsWith("?")){skipped.push(cleanName(a));continue}
+    const name=cleanName(a);
+    members.push({name,badge:b,group:cur});
+    for(let i=0;i<7;i++){
+      const v=r[2+i];if(typeof v!=="string")continue;
+      const code=OFF_CODES[v.trim().toUpperCase()];
+      if(code)off.push({name,group:cur,date:dates[i],type:code});
+    }
+  }
+  return {week:dates[0],dates,members,off,skipped,fileName};
+}
+function offToRanges(week){
+  // Merge consecutive days for the same person + type into one entry
+  const by=new Map();
+  for(const o of week.off){const k=o.name+"|"+o.type;if(!by.has(k))by.set(k,[]);by.get(k).push(o)}
+  const out=[];
+  for(const list of by.values()){
+    list.sort((x,y)=>x.date.localeCompare(y.date));
+    let cur=null;
+    for(const o of list){
+      if(cur&&addDays(cur.end,1)===o.date)cur.end=o.date;
+      else{cur={name:o.name,group:o.group,type:o.type,start:o.date,end:o.date};out.push(cur)}
+    }
+  }
+  return out;
+}
+function rosterDiff(newMembers){
+  const old=[];rosterGroups().forEach(g=>(g.members||[]).forEach(m=>old.push({...m,group:g.key})));
+  const key=m=>/^\d+$/.test(String(m.badge||"").trim())?"b"+String(m.badge).trim():"n"+normName(m.name);
+  const oldMap=new Map(old.map(m=>[key(m),m])),newMap=new Map(newMembers.map(m=>[key(m),m]));
+  const added=[],removed=[],moved=[],renamed=[];
+  for(const [k,m] of newMap){const o=oldMap.get(k);if(!o)added.push(m);else{if(o.group!==m.group)moved.push({...m,from:o.group});if(normName(o.name)!==normName(m.name))renamed.push({from:o.name,to:m.name})}}
+  for(const [k,o] of oldMap)if(!newMap.has(k))removed.push(o);
+  return {added,removed,moved,renamed,hadRoster:old.length>0};
+}
+let IMP=null;
+$("#sch-files").addEventListener("change",async e=>{
+  const files=[...e.target.files];e.target.value="";
+  if(!files.length)return;
+  if(typeof XLSX==="undefined"){toast("The Excel reader didn't load. Check your connection and reload.");return}
+  const weeks=[],errors=[];
+  for(const f of files){
+    try{
+      const wb=XLSX.read(await f.arrayBuffer(),{type:"array"});
+      const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:true,defval:null});
+      weeks.push(parseSchedule(rows,f.name));
+    }catch(err){errors.push(err.message&&err.message.includes(":")?err.message:`${f.name}: couldn't read this file.`)}
+  }
+  weeks.sort((a,b)=>a.week.localeCompare(b.week));
+  // Drop duplicate weeks (keep the last file chosen for each week)
+  const byWeek=new Map();weeks.forEach(w=>byWeek.set(w.week,w));
+  const list=[...byWeek.values()];
+  const latest=list[list.length-1];
+  const srcWeek=(S.roster&&S.roster.sourceWeek)||"";
+  const syncRoster=!!latest&&latest.week>=srcWeek;
+  const diff=latest&&syncRoster?rosterDiff(latest.members):null;
+  IMP={weeks:list,latest,syncRoster,diff,errors};
+  renderImport();$("#imp-ov").hidden=false;
+});
+function renderImport(){
+  const {weeks,latest,syncRoster,diff,errors}=IMP;
+  const gl=k=>GMAP[k]?.label||k;
+  let h="";
+  if(errors.length)h+=`<div class="ierr">${errors.map(esc).join("<br>")}</div>`;
+  if(!weeks.length){h+=`<p class="sub">No schedules could be read. Choose the weekly schedule .xlsx files.</p>`;$("#imp-body").innerHTML=h;$("#imp-apply").disabled=true;return}
+  $("#imp-apply").disabled=false;
+  h+=`<div class="isec"><h4>Time off found</h4>`+weeks.map(w=>{
+    const pto=w.off.filter(o=>o.type==="PTO").length,loa=w.off.filter(o=>o.type==="Leave").length;
+    const ppl=[...new Set(w.off.map(o=>shortName(o.name)))];
+    return `<div class="wk"><div><b>Week of ${esc(fmtShort(w.week))}</b><div class="sub" style="margin:2px 0 0">${ppl.length?esc(ppl.join(", ")):"No PTO or LOA this week"}</div></div><div class="n">${pto} PTO · ${loa} LOA days</div></div>`;
+  }).join("")+`<p class="sub" style="margin:0">Importing replaces any time off that came from earlier imports of these same weeks. Time off you entered by hand stays.</p></div>`;
+  h+=`<div class="isec"><h4>Team roster</h4>`;
+  if(!syncRoster){h+=`<p class="sub" style="margin:0">Roster unchanged. It already matches a newer schedule (week of ${esc(fmtShort(S.roster.sourceWeek))}).</p>`}
+  else{
+    h+=`<p class="sub" style="margin:0">The roster will match the newest schedule, week of ${esc(fmtShort(latest.week))} (${latest.members.length} people).</p>`;
+    if(diff.hadRoster){
+      if(!diff.added.length&&!diff.removed.length&&!diff.moved.length&&!diff.renamed.length)h+=`<p class="sub" style="margin:0">No changes to the team.</p>`;
+      if(diff.added.length)h+=`<div><div class="eyebrow">New (${diff.added.length})</div><div class="chg add">${diff.added.map(m=>`<span>${esc(m.name)} · ${esc(gl(m.group))}</span>`).join("")}</div></div>`;
+      if(diff.removed.length)h+=`<div><div class="eyebrow">No longer on the schedule (${diff.removed.length})</div><div class="chg rm">${diff.removed.map(m=>`<span>${esc(m.name)}</span>`).join("")}</div></div>`;
+      if(diff.moved.length)h+=`<div><div class="eyebrow">Changed group (${diff.moved.length})</div><div class="chg mv">${diff.moved.map(m=>`<span>${esc(m.name)}: ${esc(gl(m.from))} → ${esc(gl(m.group))}</span>`).join("")}</div></div>`;
+      if(diff.renamed.length)h+=`<div><div class="eyebrow">Name spelling updated (${diff.renamed.length})</div><div class="chg mv">${diff.renamed.map(r=>`<span>${esc(r.from)} → ${esc(r.to)}</span>`).join("")}</div></div>`;
+      if(diff.removed.length)h+=`<p class="sub" style="margin:0">Removed people keep their past time off on the calendar.</p>`;
+    }
+  }
+  if(latest&&latest.skipped.length)h+=`<p class="ierr">Skipped ${latest.skipped.length} row(s) under a section the calendar doesn't recognize: ${esc(latest.skipped.join(", "))}</p>`;
+  h+=`</div>`;
+  $("#imp-body").innerHTML=h;
+}
+async function applyImport(){
+  const {weeks,latest,syncRoster}=IMP;const btn=$("#imp-apply");btn.disabled=true;
+  try{
+    const ops=[];
+    const weekSet=new Set(weeks.map(w=>w.week));
+    S.pto.filter(e=>e.source==="schedule"&&weekSet.has(e.weekStart)).forEach(e=>ops.push(b=>b.delete(S.db.collection("pto").doc(e.id))));
+    let n=0;const now=new Date().toISOString();
+    for(const w of weeks){
+      offToRanges(w).forEach((r,i)=>{
+        const id=`sch-${w.week}-${normName(r.name).replace(/[^a-z0-9]+/g,"-")}-${i}`;
+        n++;ops.push(b=>b.set(S.db.collection("pto").doc(id),{...r,status:"Approved",note:`From schedule, week of ${fmtShort(w.week)}`,source:"schedule",weekStart:w.week,created:now,updated:now}));
+      });
+    }
+    if(syncRoster&&latest){
+      const groups=GROUPS.map(g=>({key:g.key,members:latest.members.filter(m=>m.group===g.key).map(m=>({name:m.name,badge:m.badge}))}));
+      ops.push(b=>b.set(S.db.doc("config/roster"),{groups,sourceWeek:latest.week,updated:now}));
+    }
+    for(let i=0;i<ops.length;i+=400){const b=S.db.batch();ops.slice(i,i+400).forEach(f=>f(b));await b.commit()}
+    $("#imp-ov").hidden=true;
+    toast(`Imported ${weeks.length} week${weeks.length>1?"s":""}: ${n} time-off entr${n===1?"y":"ies"}${syncRoster?", roster updated":""}`);
+    goTo(weeks[0].week<TODAY&&weeks[weeks.length-1].dates[6]>=TODAY?TODAY:weeks[0].week);
+  }catch(err){handleErr(err)}finally{btn.disabled=false}
+}
+$("#imp-apply").addEventListener("click",applyImport);
+document.querySelector('#imp-ov [data-action="close-import"]').addEventListener("click",()=>$("#imp-ov").hidden=true);
+$("#imp-ov").addEventListener("click",e=>{if(e.target.id==="imp-ov")e.target.hidden=true});
+
 /* ---------- import starter file ---------- */
 $("#imp-file").addEventListener("change",async e=>{
   const f=e.target.files[0];if(!f)return;
@@ -624,7 +804,7 @@ function boot(role){
   const showNotice=t=>{const n=$("#notice");n.textContent=t;n.hidden=false};
   S.canWrite=role==="editor";
   $("#role-label").textContent=S.canWrite?"Editor":"View only";
-  if(!S.canWrite){$("#btn-add").hidden=true;$("#btn-settings").hidden=true}
+  if(!S.canWrite){$("#btn-add").hidden=true;$("#btn-settings").hidden=true;$("#btn-import").hidden=true}
   let db;
   try{firebase.initializeApp(window.FIREBASE_CONFIG);db=firebase.firestore();}
   catch(e){showNotice("Couldn't connect to the database. Check your internet connection and reload.");S.loaded=true;render();return}
@@ -632,7 +812,7 @@ function boot(role){
   const err=e=>{if(e&&e.code==="permission-denied")showNotice("The database refused access. In Firebase, check the Firestore rules (see README).");else showNotice("Lost connection to the database. Reload to try again.")};
   db.collection("pto").onSnapshot(s=>{S.pto=s.docs.map(d=>({...d.data(),id:d.id}));S.loaded=true;buildIndex();render()},err);
   db.doc("config/roster").onSnapshot(s=>{S.roster=s.exists?s.data():null;
-    if(!S.roster)showNotice(S.canWrite?"No team roster yet. Open “Limits & team” and use Import starter file to load your team.":"The team roster hasn't been set up yet.");
+    if(!S.roster)showNotice(S.canWrite?"No team roster yet. Click “Import schedules” and choose your weekly schedule files to load your team and their PTO.":"The team roster hasn't been set up yet.");
     else $("#notice").hidden=true;render()},err);
   db.doc("config/settings").onSnapshot(s=>{S.settings=s.exists?s.data():null;buildIndex();render()},err);
 }
